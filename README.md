@@ -26,7 +26,7 @@ Student asks a question on uob.edu.bh
 **Two jobs:**
 
 1. **Answer questions** (primary) — academic calendar, regulations, deadlines, GPA rules
-2. **Create tech support tickets** (secondary) — when the AI can't help, it creates a Jira ticket automatically via n8n
+2. **Tech support ticketing** (secondary) — when the AI can't answer, it sends the message to n8n. n8n handles everything: decides if it's a ticket, categorizes it, and creates it in Jira
 
 ## How It Works
 
@@ -61,18 +61,27 @@ The chatbot backend ([UOB-AI](https://github.com/xAbdullaShaker/UOB-AI)) handles
 
 ### The Ticketing (n8n + Jira)
 
-When the AI **can't answer** a question and it's a **technical issue**, n8n creates a Jira ticket:
+When the AI **can't answer**, it sends the message to n8n. **n8n does all the logic:**
 
 ```
-Chatbot ----webhook----> n8n ----API----> Jira
-        (POST request)       (creates)    (ticket)
-                                            |
-                                            v
-                                    Tech Support Team
-                                    sees the ticket
+Chatbot can't answer
+        |
+        v
+   Sends message to n8n (webhook)
+        |
+        v
+   n8n decides:
+   - Is it a tech issue? → Create Jira ticket
+   - What category? → Labels it (bug, access, outage, etc.)
+   - What priority? → Sets it (critical, high, medium, low)
+   - Creates the ticket in Jira
+   - Returns ticket ID to chatbot
+        |
+        v
+   Tech Support Team sees the ticket
 ```
 
-**n8n** is the middleware — the chatbot sends it a webhook, n8n creates the Jira ticket, and returns the ticket ID back to the student.
+**The chatbot code stays simple** — it only answers questions. All ticketing logic lives in n8n workflows, which you can edit visually without touching code.
 
 ### What Does NOT Get a Ticket
 
@@ -145,9 +154,7 @@ Jira-AI/
 |       |-- jira-notify.json     # Jira update -> notification
 |
 |-- chatbot-plugin/
-|   |-- escalation.py            # Detects tech issues
-|   |-- categories.py            # Category & priority mapping
-|   |-- n8n_client.py            # Sends webhooks to n8n
+|   |-- n8n_client.py            # Sends webhooks to n8n (simple POST)
 |   |-- models.py                # Data models
 |
 |-- widget/
@@ -158,30 +165,37 @@ Jira-AI/
 |   |-- migration.sql            # Aurora schema
 |
 |-- tests/
-    |-- test_escalation.py
-    |-- test_categories.py
+    |-- test_n8n_client.py
 ```
 
 ## How n8n Works Here
 
-n8n runs on the same server as the chatbot. It listens for webhooks and talks to Jira:
+n8n runs on the same server as the chatbot. The chatbot code does **zero ticketing logic** — n8n handles everything:
 
-**1. Chatbot detects a tech issue it can't solve**
+**1. Chatbot can't answer a question**
 
-**2. Chatbot sends a POST request to n8n:**
+**2. Chatbot sends the raw message to n8n:**
 ```json
 {
   "session_id": "uuid-abc-123",
   "message": "البوابة ما تفتح معي، يطلع خطأ 500",
-  "category": "bug",
-  "priority": "high",
-  "language": "ar"
+  "language": "ar",
+  "page_url": "https://www.uob.edu.bh/student-portal"
 }
 ```
 
-**3. n8n receives it and creates a Jira ticket:**
+**3. n8n does all the thinking (visual workflow):**
 ```
-[Webhook] -> [Set Priority] -> [Create Jira Issue] -> [Return Ticket ID]
+[Webhook]         receives the message
+     |
+     v
+[Classify]        is it a tech issue? what category? what priority?
+     |
+     v
+[Create Jira]     creates the ticket with the right labels
+     |
+     v
+[Respond]         sends ticket ID back to chatbot
 ```
 
 **4. Chatbot tells the student:**
@@ -190,6 +204,8 @@ n8n runs on the same server as the chatbot. It listens for webhooks and talks to
 ```
 
 All tickets go to **one Tech Support team**. Labels (outage, access, bug, etc.) help them prioritize.
+
+**Why this is better:** If you want to change how tickets are categorized, change the priority rules, or add Slack notifications — you edit the n8n workflow visually. No code changes, no redeployment.
 
 ## Example Conversations
 

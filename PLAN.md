@@ -405,55 +405,36 @@ Support agent updates ticket in Jira
   -> n8n sends email: "Your ticket UOB-456 has been updated"
 ```
 
-### Escalation Detection Logic
+### How It Works: Chatbot is Simple, n8n Does the Logic
+
+**The chatbot only does one thing:** if it can't answer, it sends the message to n8n.
 
 ```python
-# How the chatbot decides to create a tech support ticket
-
-def should_create_ticket(message, faq_score, rag_chunks, language):
-    """
-    Returns: (should_create: bool, reason: str, category: str)
-    
-    ONLY creates tickets for TECHNICAL issues.
-    Academic/admin questions are answered by the bot or redirected.
-    """
-    
-    # 1. Student explicitly asks for tech support
-    if has_tech_support_keywords(message, language):
-        category = classify_tech_category(message, language)
-        return True, "student_requested_tech_support", category
-    
-    # 2. Student reports a technical problem
-    if is_technical_issue(message, language):
-        category = classify_tech_category(message, language)
-        return True, "technical_issue_detected", category
-    
-    # 3. Non-technical issue the bot can't answer -> redirect, don't ticket
-    if faq_score < 0.40 and not rag_chunks:
-        if is_academic_or_admin(message, language):
-            return False, "redirect_to_department", None  # redirect, no ticket
-        # Unknown issue -> offer tech support as option
-        return False, "offer_ticket_option", None
-    
-    return False, None, None
-
-
-TECH_KEYWORDS_EN = [
-    "error", "bug", "crash", "can't login", "not working", "down",
-    "slow", "loading", "500", "404", "password reset", "locked out",
-    "printer", "system", "portal error", "app crash"
-]
-
-TECH_KEYWORDS_AR = [
-    "خطأ", "ما يشتغل", "واقف", "ما أقدر أدخل", "بطيء", "الموقع طاح",
-    "طابعة", "النظام", "كلمة السر", "الصفحة ما تفتح",
-    "مشكلة تقنية", "دعم فني", "ما يفتح", "error"
-]
+# Chatbot code — simple POST, no ticketing logic
+async def send_to_n8n(session_id, message, language, page_url):
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            "http://localhost:5678/webhook/escalate",
+            json={
+                "session_id": session_id,
+                "message": message,
+                "language": language,
+                "page_url": page_url
+            }
+        )
+        return response.json()
 ```
 
-### Tech Support Categories & Routing
+**n8n does everything else** (visually, no code):
+- Is it a tech issue? What category? What priority?
+- Create the Jira ticket with the right labels
+- Return the ticket ID to the chatbot
 
-All Jira tickets go to **one Tech Support team**. Categories are just labels to help them prioritize:
+This means you can change all the ticketing rules in n8n's visual editor without touching the chatbot code.
+
+### Tech Support Categories (configured in n8n)
+
+All Jira tickets go to **one Tech Support team**. n8n labels and prioritizes them:
 
 | Category | Detection Keywords | Priority | Jira Label |
 |----------|-------------------|----------|------------|
@@ -484,16 +465,14 @@ All Jira tickets go to **one Tech Support team**. Categories are just labels to 
   "language": "en",
   "conversation_history": [
     {"role": "user", "content": "I can't login to the student portal, error 500"},
-    {"role": "assistant", "content": "That sounds like a technical issue. Let me create a ticket..."}
+    {"role": "assistant", "content": "I couldn't find an answer for this..."}
   ],
-  "category": "bug",
-  "priority": "high",
-  "affected_system": "student_portal",
-  "error_details": "HTTP 500 on login page",
-  "escalation_reason": "technical_issue",
   "page_url": "https://www.uob.edu.bh/student-portal",
   "timestamp": "2026-05-14T10:30:00Z"
 }
+```
+
+**Note:** The chatbot sends raw data only. No `category`, no `priority` — **n8n figures that out** from the message content using its workflow nodes.
 ```
 
 **Note:** `page_url` is new — the widget captures which page the student was on when they asked. This helps the support team understand context.
@@ -622,9 +601,7 @@ Jira-AI/
 |   |   |-- jira-notify.json         # Workflow 3: Jira -> notification
 |
 |-- chatbot-plugin/
-|   |-- escalation.py                # Detects when to escalate
-|   |-- categories.py                # Category & priority mapping
-|   |-- n8n_client.py                # Sends webhooks to n8n
+|   |-- n8n_client.py                # Sends webhooks to n8n (simple POST)
 |   |-- models.py                    # Pydantic models for tickets
 |   |-- __init__.py
 |
@@ -642,8 +619,6 @@ Jira-AI/
 |   |-- issue-types.md               # Custom fields & workflows
 |
 |-- tests/
-|   |-- test_escalation.py
-|   |-- test_categories.py
 |   |-- test_n8n_client.py
 ```
 
@@ -652,8 +627,8 @@ Jira-AI/
 ```
 UOB-AI/
 |-- db.py            -> db_aurora.py       # Replace Supabase with Aurora (asyncpg)
-|-- api.py                                 # Add: escalation route, Jira callback endpoint
-|-- core.py                                # Add: should_escalate(), escalation keywords
+|-- api.py                                 # Add: send to n8n when no answer found
+|-- core.py                                # No ticketing logic — n8n handles it
 |-- .env                                   # Replace: SUPABASE_* with AURORA_*
 |-- requirements.txt                       # Add: asyncpg. Remove: supabase
 |-- frontend/
