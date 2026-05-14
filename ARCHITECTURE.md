@@ -151,12 +151,11 @@ flowchart TD
     E -->|System Outage| F[Priority: CRITICAL\nTeam: Infrastructure]
     E -->|Login/Access| G[Priority: HIGH\nTeam: Identity & Access]
     E -->|Portal Bug| H[Priority: HIGH\nTeam: App Dev]
-    E -->|Network/WiFi| I[Priority: MEDIUM\nTeam: Network]
-    E -->|Email/Apps| J[Priority: MEDIUM\nTeam: Collaboration Tools]
-    E -->|Hardware| K[Priority: LOW\nTeam: Desktop Support]
-    E -->|General Tech| L[Priority: LOW\nTeam: Help Desk L1]
+    E -->|Email/Apps| I[Priority: MEDIUM\nTeam: Collaboration Tools]
+    E -->|Hardware| J[Priority: LOW\nTeam: Desktop Support]
+    E -->|General Tech| K[Priority: LOW\nTeam: Help Desk L1]
     
-    F & G & H & I & J & K & L --> M[Send webhook to n8n]
+    F & G & H & I & J & K --> M[Send webhook to n8n]
     
     M --> N[n8n creates Jira issue\nin UOBTECH project]
     N --> O[Save to ticket_sessions\nin Aurora]
@@ -314,7 +313,6 @@ graph TD
             Infra["Infrastructure\nServers & Outages"]
             IAM["Identity & Access\nLogin & Passwords"]
             AppDev["Application Dev\nPortal & App Bugs"]
-            Network["Network Team\nWiFi & Connectivity"]
             Collab["Collaboration Tools\nEmail & Apps"]
             Desktop["Desktop Support\nHardware & Labs"]
             L1["Help Desk L1\nGeneral Tech"]
@@ -365,7 +363,7 @@ erDiagram
         int id PK
         text session_id
         text ticket_id
-        text category "outage/access/bug/network/email/hardware/general"
+        text category "outage/access/bug/email/hardware/general"
         text priority "critical/high/medium/low"
         text affected_system "portal/wifi/email/etc"
         text language

@@ -348,7 +348,7 @@ async def retrieve_calendar_chunks(embedding, top_k=4, min_score=0.35):
 The chatbot's **main job** is answering questions. Jira is the **tech support ticketing system** for when:
 - The student has a **technical issue** (system down, can't login, portal error, app crash)
 - The student reports a **bug** on any university system
-- The student needs **IT help** (password reset, access request, network issues)
+- The student needs **IT help** (password reset, access request)
 - The student explicitly asks for tech support
 
 **The bot should NOT create a Jira ticket for:**
@@ -441,12 +441,12 @@ def should_create_ticket(message, faq_score, rag_chunks, language):
 TECH_KEYWORDS_EN = [
     "error", "bug", "crash", "can't login", "not working", "down",
     "slow", "loading", "500", "404", "password reset", "locked out",
-    "wifi", "network", "printer", "system", "portal error", "app crash"
+    "printer", "system", "portal error", "app crash"
 ]
 
 TECH_KEYWORDS_AR = [
     "خطأ", "ما يشتغل", "واقف", "ما أقدر أدخل", "بطيء", "الموقع طاح",
-    "واي فاي", "شبكة", "طابعة", "النظام", "كلمة السر", "الصفحة ما تفتح",
+    "طابعة", "النظام", "كلمة السر", "الصفحة ما تفتح",
     "مشكلة تقنية", "دعم فني", "ما يفتح", "error"
 ]
 ```
@@ -460,7 +460,6 @@ All Jira tickets are **tech support issues**. Categories route within the IT dep
 | System Outage | نظام واقف, server down, 500 error, site down, الموقع ما يشتغل | Critical | `outage` | Infrastructure Team |
 | Login/Access | ما أقدر أدخل, can't login, password, locked out, access denied | High | `access` | Identity & Access Team |
 | Portal Bugs | خطأ, error, bug, glitch, الصفحة ما تفتح, not loading, crash | High | `bug` | Application Dev Team |
-| Network/WiFi | واي فاي, wifi, internet, الشبكة, network, VPN | Medium | `network` | Network Team |
 | Email/Apps | إيميل, email, outlook, teams, الايميل ما يشتغل | Medium | `email-apps` | Collaboration Tools Team |
 | Hardware | طابعة, printer, projector, بروجكتر, lab computer | Low | `hardware` | Desktop Support |
 | General Tech | مساعدة تقنية, tech help, IT help, everything else | Low | `general-tech` | Help Desk (L1) |
@@ -756,18 +755,18 @@ Bot:     تم فتح تذكرة رقم UOB-456
          تقدر تسألني عن وضع التذكرة في أي وقت.
 ```
 
-### Scenario 3: Student reports WiFi issue
+### Scenario 3: Student reports email issue
 
 ```
-Student: الواي فاي في مبنى العلوم ما يشتغل
-Bot:     بسجل المشكلة لفريق الشبكات.
-         وين بالضبط في المبنى؟ (اختياري)
+Student: الايميل الجامعي ما يفتح معي
+Bot:     يبدو إن فيه مشكلة تقنية في الايميل.
+         بسوي لك تذكرة دعم. شنو رسالة الخطأ اللي تطلع لك؟
 
-Student: الطابق الثاني، معمل الكمبيوتر
+Student: يقول invalid credentials بس كلمة السر صحيحة
 Bot:     تم فتح تذكرة UOB-457
-         النوع: مشكلة شبكة
-         الموقع: مبنى العلوم - الطابق 2 - معمل الكمبيوتر
-         فريق الشبكات بيتابعون.
+         النوع: مشكلة إيميل / تطبيقات
+         الأولوية: متوسطة
+         فريق الدعم التقني بيتواصلون معك.
 ```
 
 ### Scenario 4: Student checks ticket status
