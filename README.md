@@ -168,6 +168,59 @@ Jira-AI/
     |-- test_n8n_client.py
 ```
 
+## Why n8n? Why Not Just Let the AI Do It?
+
+Good question. The AI (Claude/GPT) could just call the Jira API directly in code. But here's why n8n is better:
+
+### The Problem With AI Doing It Directly
+
+```
+Student message → AI decides → AI calls Jira API → ticket created
+```
+
+- The AI might **hallucinate** a category or priority
+- If Jira API changes, you have to **change code and redeploy**
+- If you want to add Slack/email notifications, you have to **write more code**
+- No visibility — you can't see what happened between the AI and Jira
+- If Jira is down, your code crashes or you have to write retry logic
+- Every change = code change = testing = deployment
+
+### The n8n Way
+
+```
+Student message → AI can't answer → sends to n8n → n8n handles everything
+```
+
+- **Visual workflow** — you can see exactly what happens at each step
+- **Change rules without code** — drag and drop in n8n's editor
+- **Add Slack/email/Teams** — just add a node, takes 2 minutes
+- **Built-in retries** — if Jira is down, n8n queues and retries automatically
+- **Logs everything** — you can see every ticket that was created, when, and why
+- **Non-developers can modify it** — your IT team can change the workflow without a developer
+
+### Real Example
+
+Say tomorrow the Tech Support team says: *"We also want an email when a critical ticket is created."*
+
+**Without n8n:** Write Python code → test → deploy → hope it works
+
+**With n8n:** Open the workflow → drag an "Email" node → connect it → done. 2 minutes, no code.
+
+### Think of It Like This
+
+| | AI does it directly | n8n does it |
+|---|---|---|
+| **Change ticket rules** | Edit code, redeploy | Edit workflow visually |
+| **Add Slack notification** | Write code, redeploy | Add a node (2 min) |
+| **Jira is down** | Your app crashes | n8n retries automatically |
+| **See what happened** | Read server logs | Visual execution history |
+| **IT team wants changes** | Needs a developer | They do it themselves |
+| **Switch to ServiceNow** | Rewrite everything | Swap one node |
+
+**Bottom line:** The AI is smart, but it shouldn't be managing integrations. Let the AI answer questions. Let n8n handle the plumbing.
+
+---
+
 ## How n8n Works Here
 
 n8n runs on the same server as the chatbot. The chatbot code does **zero ticketing logic** — n8n handles everything:
