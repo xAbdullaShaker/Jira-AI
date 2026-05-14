@@ -656,7 +656,7 @@ UOB-AI/
 |-- .env                                   # Replace: SUPABASE_* with AURORA_*
 |-- requirements.txt                       # Add: asyncpg. Remove: supabase
 |-- frontend/
-|   |-- src/App.jsx                        # Add: ticket UI, "Talk to Human" button
+|   |-- src/App.jsx                        # Add: ticket UI, "Create Tech Support Ticket" button
 |   |-- src/widget-mode.css                # New: compact styles for iframe mode
 |-- widget/
 |   |-- uob-chat.js                        # New: embed script for WordPress

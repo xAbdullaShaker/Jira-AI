@@ -95,7 +95,7 @@ graph TB
                 Messages[Chat Messages Area\nFAQ + RAG responses]
                 TicketBanner[Ticket Banner\nUOB-456 created]
                 Input[Message Input\n+ Send Button]
-                HumanBtn[Talk to Human Button]
+                TicketBtn[Create Tech Support Ticket Button]
             end
         end
     end
