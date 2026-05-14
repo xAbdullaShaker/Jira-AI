@@ -453,16 +453,18 @@ TECH_KEYWORDS_AR = [
 
 ### Tech Support Categories & Routing
 
-All Jira tickets are **tech support issues**. Categories route within the IT department:
+All Jira tickets go to **one Tech Support team**. Categories are just labels to help them prioritize:
 
-| Category | Detection Keywords | Priority | Jira Label | Assigned To |
-|----------|-------------------|----------|------------|-------------|
-| System Outage | نظام واقف, server down, 500 error, site down, الموقع ما يشتغل | Critical | `outage` | Infrastructure Team |
-| Login/Access | ما أقدر أدخل, can't login, password, locked out, access denied | High | `access` | Identity & Access Team |
-| Portal Bugs | خطأ, error, bug, glitch, الصفحة ما تفتح, not loading, crash | High | `bug` | Application Dev Team |
-| Email/Apps | إيميل, email, outlook, teams, الايميل ما يشتغل | Medium | `email-apps` | Collaboration Tools Team |
-| Hardware | طابعة, printer, projector, بروجكتر, lab computer | Low | `hardware` | Desktop Support |
-| General Tech | مساعدة تقنية, tech help, IT help, everything else | Low | `general-tech` | Help Desk (L1) |
+| Category | Detection Keywords | Priority | Jira Label |
+|----------|-------------------|----------|------------|
+| System Outage | نظام واقف, server down, 500 error, site down, الموقع ما يشتغل | Critical | `outage` |
+| Login/Access | ما أقدر أدخل, can't login, password, locked out, access denied | High | `access` |
+| Portal Bugs | خطأ, error, bug, glitch, الصفحة ما تفتح, not loading, crash | High | `bug` |
+| Email/Apps | إيميل, email, outlook, teams, الايميل ما يشتغل | Medium | `email-apps` |
+| Hardware | طابعة, printer, projector, بروجكتر, lab computer | Low | `hardware` |
+| General Tech | مساعدة تقنية, tech help, IT help, everything else | Low | `general-tech` |
+
+**One team handles everything.** Labels + priority help them decide what to fix first.
 
 ### What is NOT a Jira ticket (redirect instead):
 

@@ -151,22 +151,24 @@ flowchart TD
     E -->|System Outage| F[Priority: CRITICAL\nTeam: Infrastructure]
     E -->|Login/Access| G[Priority: HIGH\nTeam: Identity & Access]
     E -->|Portal Bug| H[Priority: HIGH\nTeam: App Dev]
-    E -->|Email/Apps| I[Priority: MEDIUM\nTeam: Collaboration Tools]
-    E -->|Hardware| J[Priority: LOW\nTeam: Desktop Support]
-    E -->|General Tech| K[Priority: LOW\nTeam: Help Desk L1]
+    E -->|Email/Apps| I[Priority: MEDIUM]
+    E -->|Hardware| J[Priority: LOW]
+    E -->|General Tech| K[Priority: LOW]
     
     F & G & H & I & J & K --> M[Send webhook to n8n]
     
     M --> N[n8n creates Jira issue\nin UOBTECH project]
-    N --> O[Save to ticket_sessions\nin Aurora]
-    O --> P[Return ticket ID to student\nUOB-456]
+    N --> O[All tickets assigned to\nTech Support Team]
+    O --> P[Save to ticket_sessions\nin Aurora]
+    P --> Q[Return ticket ID to student\nUOB-456]
 
     style A fill:#f44336,color:#fff
     style C fill:#9E9E9E,color:#fff
     style M fill:#FF6D00,color:#fff
     style N fill:#0052CC,color:#fff
-    style O fill:#FF9800,color:#fff
-    style P fill:#4CAF50,color:#fff
+    style O fill:#0052CC,color:#fff
+    style P fill:#FF9800,color:#fff
+    style Q fill:#4CAF50,color:#fff
 ```
 
 ## 6. n8n Workflow 1: Escalation
@@ -309,13 +311,8 @@ graph TD
             HW["Hardware Request\n(Printer/lab equipment)"]
         end
         
-        subgraph ITTeams["IT Support Teams"]
-            Infra["Infrastructure\nServers & Outages"]
-            IAM["Identity & Access\nLogin & Passwords"]
-            AppDev["Application Dev\nPortal & App Bugs"]
-            Collab["Collaboration Tools\nEmail & Apps"]
-            Desktop["Desktop Support\nHardware & Labs"]
-            L1["Help Desk L1\nGeneral Tech"]
+        subgraph ITTeam["Assigned To"]
+            TechSupport["Tech Support Team\n(one team handles all)"]
         end
     end
 
