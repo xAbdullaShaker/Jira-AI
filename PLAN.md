@@ -1,502 +1,806 @@
-# Jira-AI: UOB Chatbot + Jira Integration Plan
+# UOB-AI: Chatbot Widget + Jira Integration Plan
 
 ## What Are We Building?
 
-We're adding a **customer service layer** to the existing UOB-AI chatbot. Right now, the chatbot answers academic questions (calendar, regulations). But when it **can't help** or the student **needs human support**, there's nowhere to go.
+A **bilingual AI chatbot widget** that lives on the University of Bahrain website (`uob.edu.bh`) and serves two purposes:
 
-**The goal:** When the chatbot can't solve a student's problem, it automatically creates a Jira ticket and connects the student to a human support agent — all through n8n as the middleware.
+1. **Primary: Answer student questions** — academic calendar, regulations, deadlines, GPA rules (this already works in UOB-AI)
+2. **Secondary: Jira escalation** — when the bot can't help, it creates a Jira ticket via n8n and connects the student to human support
 
----
-
-## Why This Architecture?
-
-### Why n8n? (and not direct Jira API calls)
-
-| Approach | Pros | Cons |
-|----------|------|------|
-| **Direct Jira API in Python** | Simple, no extra tools | Tightly coupled, hard to change, no visual flow |
-| **n8n as middleware** | Visual workflows, easy to modify, handles retries, logs everything | Extra service to run |
-| **Zapier/Make** | Easy setup | Costs money, not self-hosted, data leaves your control |
-
-**We chose n8n because:**
-1. **Free & self-hosted** — student data stays on your server (important for university)
-2. **Visual workflows** — non-developers can modify the flow later
-3. **500+ integrations** — tomorrow you can add Slack, Email, Teams without code changes
-4. **Retry & error handling** — if Jira is down, n8n queues and retries automatically
-5. **Decoupled** — the chatbot doesn't need to know Jira exists; n8n handles the bridge
+The chatbot widget will be **embedded directly on uob.edu.bh** (a WordPress site using the Avada theme), so students don't need to visit a separate page.
 
 ---
 
-## System Architecture
-
-### High-Level Overview
+## The Big Picture
 
 ```
-+------------------+       +------------------+       +------------------+
-|                  |       |                  |       |                  |
-|    Student       |       |    UOB-AI        |       |    n8n           |
-|    (Browser)     +------>+    Chatbot       +------>+    Middleware    |
-|                  |  SSE  |    (FastAPI)     | HTTP  |    (Workflows)  |
-|                  |<------+                  |       |                  |
-+------------------+       +--------+---------+       +--------+---------+
-                                    |                          |
-                                    |                          |
-                           +--------v---------+       +--------v---------+
-                           |                  |       |                  |
-                           |   Supabase       |       |   Jira Cloud     |
-                           |   (PostgreSQL)   |       |   (Atlassian)    |
-                           |                  |       |                  |
-                           +------------------+       +------------------+
-```
-
-### Detailed Data Flow
-
-```
-Student asks: "I paid my fees but it still shows unpaid"
-        |
-        v
-+---------------------------------------+
-|           UOB-AI Chatbot              |
-|                                       |
-|  1. Sanitize input                    |
-|  2. Detect language (Arabic)          |
-|  3. Search FAQ (no match)             |
-|  4. Search RAG (no relevant context)  |
-|  5. AI classifies as SUPPORT_NEEDED   |
-|                                       |
-|  Response to student:                 |
-|  "I can't help with payment issues.   |
-|   I'm creating a support ticket for   |
-|   you. A human agent will follow up." |
-|                                       |
-|  6. Send webhook to n8n ----------+   |
-+---------------------------------------+
-                                    |
-                                    v
-+---------------------------------------+
-|              n8n Workflow              |
-|                                       |
-|  Trigger: Webhook received            |
-|       |                               |
-|       v                               |
-|  Classify ticket priority             |
-|  (payment = HIGH)                     |
-|       |                               |
-|       v                               |
-|  Create Jira issue                    |
-|  - Project: UOB-SUPPORT               |
-|  - Type: Service Request              |
-|  - Priority: High                     |
-|  - Labels: [payment, arabic]          |
-|  - Description: conversation context  |
-|       |                               |
-|       v                               |
-|  Send confirmation back to chatbot    |
-|  (ticket ID: UOB-123)                |
-|       |                               |
-|       v                               |
-|  (Optional) Notify agent on Slack     |
-|  (Optional) Send email to student     |
-+---------------------------------------+
-                                    |
-                                    v
-+---------------------------------------+
-|           Jira Cloud                  |
-|                                       |
-|  New issue: UOB-123                   |
-|  Status: Open                         |
-|  Assigned to: Support Team            |
-|  Student can check status via chatbot |
-+---------------------------------------+
+uob.edu.bh (WordPress)                    Your Server (AWS)
++---------------------------+              +---------------------------+
+|                           |              |                           |
+|  [Avada Theme Pages]      |   HTTPS      |  FastAPI Backend (:8005)  |
+|                           +------------->+                           |
+|  +---------------------+ |              |  - FAQ/RAG pipeline       |
+|  | Chat Widget (iframe) | |   SSE       |  - Aurora PostgreSQL      |
+|  | or JS embed          |<--------------+  - Escalation logic       |
+|  |                      | |              |                           |
+|  | "Ask me anything!" | |              +------------+--------------+
+|  +---------------------+ |                           |
+|                           |                           | webhook
++---------------------------+                           v
+                                           +---------------------------+
+                                           |  n8n (:5678)              |
+                                           |  - Escalation workflow    |
+                                           |  - Status check workflow  |
+                                           |  - Notification workflow  |
+                                           +------------+--------------+
+                                                        |
+                                                        | API
+                                                        v
+                                           +---------------------------+
+                                           |  Jira Cloud (Atlassian)   |
+                                           |  - Support tickets        |
+                                           |  - Team routing           |
+                                           +---------------------------+
 ```
 
 ---
 
-## The Three Workflows
+## Part 1: Widget on uob.edu.bh
 
-### Workflow 1: Escalation (Chatbot -> Jira)
+### Why a Widget?
 
-**When:** The chatbot can't answer OR the student asks for human help
+The UOB website is a **WordPress site** (Avada theme). We can't (and shouldn't) rebuild it. Instead, we inject a **chat widget** — a small floating button in the corner that opens a chat window.
+
+### How to Embed on WordPress
+
+There are **3 options**, from simplest to most robust:
+
+#### Option A: JavaScript Embed (Recommended)
+
+A single `<script>` tag that the WordPress admin adds to the site. This is how Intercom, Crisp, Drift, and every major chat widget works.
+
+**WordPress admin adds this (one time):**
+```html
+<!-- UOB AI Chat Widget -->
+<script>
+  (function() {
+    var w = document.createElement('script');
+    w.src = 'https://your-server.com/widget/uob-chat.js';
+    w.async = true;
+    document.head.appendChild(w);
+  })();
+</script>
+```
+
+**What `uob-chat.js` does:**
+1. Creates a floating button (bottom-right corner)
+2. On click, opens an iframe pointing to your React chat app
+3. Handles open/close animation
+4. Passes the current page URL to the chatbot (context)
+5. Works on mobile and desktop
+
+**Why this is best:**
+- WordPress admin only adds one line — no plugin needed
+- Widget updates automatically (you change the JS on your server)
+- No interference with Avada theme
+- Works on every page of uob.edu.bh
+
+#### Option B: iframe Embed
+
+Simpler but less flexible. Add an iframe to specific pages:
+
+```html
+<iframe 
+  src="https://your-server.com/chat" 
+  style="position:fixed; bottom:20px; right:20px; width:400px; height:600px; border:none; border-radius:16px; z-index:9999;"
+  allow="microphone"
+></iframe>
+```
+
+**Downside:** No open/close toggle, always visible, harder to make responsive.
+
+#### Option C: WordPress Plugin
+
+Build a custom WordPress plugin that injects the widget. This is overkill for now but useful if UOB IT wants control over which pages show the widget.
+
+### Widget Architecture
 
 ```
-+-------------+     +-----------+     +------------+     +----------+     +-----------+
-|  Webhook    |     | Classify  |     | Create     |     | Notify   |     | Reply to  |
-|  from       +---->+ Priority  +---->+ Jira       +---->+ Support  +---->+ Chatbot   |
-|  Chatbot    |     | & Route   |     | Ticket     |     | Team     |     | (ticket#) |
-+-------------+     +-----------+     +------------+     +----------+     +-----------+
+Student visits uob.edu.bh
+         |
+         v
+WordPress loads page (Avada theme)
+         |
+         v
+<script> tag loads uob-chat.js from your server
+         |
+         v
+uob-chat.js creates:
+  1. Floating button (bottom-right)
+  2. Hidden iframe (your React chat app)
+         |
+         v
+Student clicks button -> iframe opens
+         |
+         v
+React app inside iframe talks to FastAPI via SSE
+(same as current UOB-AI, just inside an iframe)
 ```
 
-**Webhook payload (Chatbot sends this to n8n):**
+### Widget File Structure (new in UOB-AI repo)
+
+```
+UOB-AI/
+|-- frontend/
+|   |-- src/
+|   |   |-- App.jsx           # Existing chat UI (works inside iframe)
+|   |   |-- widget-mode.css   # Compact styles for widget mode
+|   |
+|-- widget/
+|   |-- uob-chat.js           # The embed script (loaded by WordPress)
+|   |-- widget.css             # Floating button + iframe container styles
+```
+
+### CORS Configuration
+
+Since the widget on `uob.edu.bh` talks to your server, you need to allow cross-origin requests:
+
+```python
+# api.py - update CORS
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://www.uob.edu.bh",
+        "https://uob.edu.bh",
+        "http://localhost:5173",  # dev
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+```
+
+### Widget Security
+
+| Risk | Solution |
+|------|----------|
+| Someone embeds your widget on a fake site | Check `Referer` header — only allow `uob.edu.bh` |
+| DDoS via widget | Rate limiting already exists (30 msg/10 min per IP) |
+| XSS through widget | iframe is sandboxed — can't access parent page DOM |
+| Student data leaking to WordPress | Widget runs in iframe — no data shared with WordPress |
+
+---
+
+## Part 2: Amazon Aurora PostgreSQL (Replacing Supabase)
+
+### Why Aurora Instead of Supabase?
+
+| | Supabase | Aurora PostgreSQL |
+|---|---|---|
+| **Control** | Supabase manages it | You manage it (or AWS does) |
+| **Performance** | Good | 3-5x faster than standard PostgreSQL |
+| **Scaling** | Manual | Auto-scales storage (up to 128 TB) |
+| **Read replicas** | Paid | Up to 15 read replicas |
+| **pgvector** | Supported | Supported (extension) |
+| **Compliance** | SOC 2 | SOC 2, ISO, HIPAA — better for university |
+| **Location** | Fixed regions | Choose region (me-south-1 Bahrain!) |
+| **Cost** | Free tier then pay | Pay per use (no free tier) |
+
+**Key reason:** Aurora can run in **me-south-1 (Bahrain region)** — student data stays in Bahrain. This matters for university compliance.
+
+### Aurora Setup
+
+#### 1. Create Aurora Cluster
+
+```
+AWS Console -> RDS -> Create Database
+  - Engine: Amazon Aurora PostgreSQL-Compatible
+  - Version: 15.x or 16.x (must support pgvector)
+  - Template: Production
+  - DB Cluster Identifier: uob-ai-db
+  - Master username: uob_admin
+  - Instance: db.r6g.large (start small, scale later)
+  - Region: me-south-1 (Bahrain)
+  - VPC: your existing VPC
+  - Public access: No (internal only)
+  - Security group: allow port 5432 from your app server only
+```
+
+#### 2. Enable pgvector Extension
+
+```sql
+-- Connect to Aurora and run:
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- Verify
+SELECT * FROM pg_extension WHERE extname = 'vector';
+```
+
+#### 3. Create Tables (migrate from Supabase schema)
+
+```sql
+-- FAQ embeddings
+CREATE TABLE faq_embeddings (
+    id SERIAL PRIMARY KEY,
+    faq_id TEXT NOT NULL,
+    question TEXT NOT NULL,
+    answer_en TEXT,
+    answer_ar TEXT,
+    embedding vector(3072) NOT NULL
+);
+
+-- Calendar embeddings
+CREATE TABLE calendar_chunks (
+    id SERIAL PRIMARY KEY,
+    content TEXT NOT NULL,
+    source TEXT,
+    embedding vector(3072) NOT NULL
+);
+
+-- Regulation embeddings (dual language)
+CREATE TABLE regulation_chunks (
+    id SERIAL PRIMARY KEY,
+    content_en TEXT,
+    content_ar TEXT,
+    article_number TEXT,
+    embedding_en vector(3072),
+    embedding_ar vector(3072)
+);
+
+-- Ticket tracking (NEW - for Jira integration)
+CREATE TABLE ticket_sessions (
+    id SERIAL PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    ticket_id TEXT NOT NULL,
+    category TEXT,
+    language TEXT DEFAULT 'en',
+    student_email TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- HNSW indexes for fast similarity search
+CREATE INDEX idx_faq_embedding ON faq_embeddings 
+    USING hnsw (embedding vector_cosine_ops);
+
+CREATE INDEX idx_calendar_embedding ON calendar_chunks 
+    USING hnsw (embedding vector_cosine_ops);
+
+CREATE INDEX idx_regulation_en_embedding ON regulation_chunks 
+    USING hnsw (embedding_en vector_cosine_ops);
+
+CREATE INDEX idx_regulation_ar_embedding ON regulation_chunks 
+    USING hnsw (embedding_ar vector_cosine_ops);
+```
+
+#### 4. Update UOB-AI to Use Aurora
+
+Replace `db.py` (Supabase client) with a direct PostgreSQL connection:
+
+```python
+# db_aurora.py
+import asyncpg
+
+AURORA_CONFIG = {
+    "host": "uob-ai-db.cluster-xxxxx.me-south-1.rds.amazonaws.com",
+    "port": 5432,
+    "database": "uobai",
+    "user": "uob_admin",
+    "password": "from-env-variable",
+    "ssl": "require"
+}
+
+pool = None
+
+async def get_pool():
+    global pool
+    if pool is None:
+        pool = await asyncpg.create_pool(**AURORA_CONFIG)
+    return pool
+
+async def find_top_faq_matches(embedding, top_k=3):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT faq_id, question, answer_en, answer_ar,
+                   1 - (embedding <=> $1::vector) as similarity
+            FROM faq_embeddings
+            ORDER BY embedding <=> $1::vector
+            LIMIT $2
+        """, str(embedding), top_k)
+        return rows
+
+async def retrieve_calendar_chunks(embedding, top_k=4, min_score=0.35):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT content, source,
+                   1 - (embedding <=> $1::vector) as similarity
+            FROM calendar_chunks
+            WHERE 1 - (embedding <=> $1::vector) >= $3
+            ORDER BY embedding <=> $1::vector
+            LIMIT $2
+        """, str(embedding), top_k, min_score)
+        return rows
+```
+
+### Aurora vs Supabase: What Changes in the Codebase
+
+| File | Change |
+|------|--------|
+| `db.py` | Replace with `db_aurora.py` (asyncpg instead of supabase-py) |
+| `core.py` | Update imports to use new db module |
+| `api.py` | Add pool initialization on startup |
+| `.env` | Replace `SUPABASE_URL`/`SUPABASE_KEY` with `AURORA_HOST`/`AURORA_PASSWORD` |
+| `migrate_to_pgvector.py` | Update to push embeddings to Aurora |
+| `requirements.txt` | Add `asyncpg`, remove `supabase` |
+
+---
+
+## Part 3: Jira Integration via n8n (Secondary Feature)
+
+### Reminder: This is Optional
+
+The chatbot's **main job** is answering questions. Jira escalation is a **nice-to-have** for when:
+- The bot genuinely can't answer (out of domain)
+- The student explicitly asks for human help
+- The issue requires action (payment problems, registration errors)
+
+**The bot should NOT escalate for:**
+- Questions it can answer from FAQ/RAG
+- Vague messages ("hi", "hello")
+- Repeated questions (try harder before escalating)
+
+### The Three n8n Workflows
+
+#### Workflow 1: Escalation (Chatbot -> Jira)
+
+**When:** Bot can't answer AND student confirms they want a ticket
+
+```
+Student: "I paid my fees but it still shows unpaid"
+Bot:     [searches FAQ - no match]
+         [searches RAG - no relevant context]
+         [detects: out-of-domain, actionable issue]
+         "I can't help with payment system issues directly.
+          Would you like me to create a support ticket? (yes/no)"
+Student: "yes"
+Bot:     [asks category if unclear]
+         [sends webhook to n8n]
+         "Done! Ticket UOB-456 created. Finance team will contact you within 24h."
+```
+
+**n8n flow:**
+```
+Webhook -> Classify Priority -> Create Jira Issue -> Return Ticket ID
+           |                                          |
+           |  payment = HIGH                          |  also:
+           |  grades = MEDIUM                         |  - notify Slack
+           |  general = LOW                           |  - send email
+```
+
+#### Workflow 2: Status Check (Student -> Jira via bot)
+
+```
+Student: "What happened with ticket UOB-456?"
+Bot:     [detects ticket status intent]
+         [sends webhook to n8n with ticket ID]
+         "Ticket UOB-456:
+          Status: In Progress
+          Team: Finance Department
+          Last update: Verifying payment with the bank (2 hours ago)"
+```
+
+#### Workflow 3: Notification (Jira -> Student)
+
+```
+Support agent updates ticket in Jira
+  -> Jira fires webhook to n8n
+  -> n8n looks up student email from ticket_sessions table
+  -> n8n sends email: "Your ticket UOB-456 has been updated"
+```
+
+### Escalation Detection Logic
+
+```python
+# How the chatbot decides to escalate
+
+def should_escalate(message, faq_score, rag_chunks, language):
+    """
+    Returns: (should_escalate: bool, reason: str)
+    
+    Escalation triggers:
+    1. Explicit request for human help
+    2. Bot can't answer (low FAQ + low RAG scores)
+    3. Issue requires action (not just information)
+    """
+    
+    # 1. Explicit escalation keywords
+    if has_escalation_keywords(message, language):
+        return True, "student_requested"
+    
+    # 2. Bot genuinely can't answer
+    if faq_score < 0.40 and not rag_chunks:
+        return True, "no_answer_found"
+    
+    # 3. Actionable issues (payment, registration errors)
+    if is_actionable_issue(message, language):
+        return True, "actionable_issue"
+    
+    return False, None
+```
+
+### Categories & Routing
+
+| Category | Detection Keywords | Priority | Jira Label | Team |
+|----------|-------------------|----------|------------|------|
+| Payment/Fees | دفع, رسوم, payment, fees, paid | High | `payment` | Finance |
+| Registration | تسجيل, مواد, register, courses, enroll | High | `registration` | Registrar |
+| Grades | درجات, نتائج, grades, results, GPA | Medium | `grades` | Academic Affairs |
+| IT/System | نظام, موقع, system, login, password | Medium | `it-support` | IT |
+| Complaints | شكوى, complaint, unfair | High | `complaint` | Quality Assurance |
+| General | everything else | Low | `general` | Student Services |
+
+### Webhook Payload (Chatbot -> n8n)
+
 ```json
 {
   "session_id": "uuid-abc-123",
-  "student_message": "I paid my fees but it still shows unpaid",
+  "message": "I paid my fees but it still shows unpaid",
   "language": "en",
   "conversation_history": [
     {"role": "user", "content": "I paid my fees but it still shows unpaid"},
-    {"role": "assistant", "content": "I can help with academic questions..."}
+    {"role": "assistant", "content": "I specialize in academic questions..."}
   ],
-  "category": "payment_issue",
+  "category": "payment",
+  "escalation_reason": "actionable_issue",
+  "page_url": "https://www.uob.edu.bh/admission/fees",
   "timestamp": "2026-05-14T10:30:00Z"
 }
 ```
 
-**n8n creates Jira ticket:**
-```json
-{
-  "fields": {
-    "project": {"key": "UOBSUP"},
-    "issuetype": {"name": "Service Request"},
-    "summary": "Payment issue - fees showing unpaid after payment",
-    "description": "Student reports paying fees but system shows unpaid.\n\nConversation:\n- Student: I paid my fees but it still shows unpaid\n- Bot: I can help with academic questions...\n\nLanguage: English\nSession: uuid-abc-123",
-    "priority": {"name": "High"},
-    "labels": ["payment", "chatbot-escalation", "english"]
-  }
+**Note:** `page_url` is new — the widget captures which page the student was on when they asked. This helps the support team understand context.
+
+---
+
+## Part 4: Complete System Architecture
+
+### How Everything Connects
+
+```
++-----------------------------------------------------------------------+
+|                         AWS (me-south-1 Bahrain)                      |
+|                                                                       |
+|  +------------------+                                                 |
+|  | Aurora PostgreSQL |  <-- pgvector for embeddings                   |
+|  | (uob-ai-db)      |  <-- ticket_sessions for Jira tracking         |
+|  +--------+---------+                                                 |
+|           ^                                                           |
+|           | asyncpg (port 5432, internal)                             |
+|           |                                                           |
+|  +--------+---------+     webhook     +------------------+            |
+|  |                  +---------------->+                  |            |
+|  |  UOB-AI Chatbot  |                |  n8n             |            |
+|  |  (FastAPI :8005) |<----------------+  (Docker :5678)  |            |
+|  |                  |   ticket info   |                  |            |
+|  +--------+---------+                +--------+---------+            |
+|           ^                                   |                      |
+|           | Nginx reverse proxy               | Jira REST API        |
+|           |                                   |                      |
+|  +--------+---------+                +--------v---------+            |
+|  |                  |                |                  |            |
+|  |  Nginx (:443)    |                |  Jira Cloud      |            |
+|  |  SSL termination |                |  (atlassian.net) |            |
+|  |  + static files  |                |                  |            |
+|  +--------+---------+                +------------------+            |
+|           ^                                                          |
++-----------+----------------------------------------------------------+
+            |
+            | HTTPS
+            |
++-----------+----------------------------------------------------------+
+|           v                                                          |
+|  +--------+---------+                                                |
+|  |  uob.edu.bh      |                                                |
+|  |  (WordPress)      |                                                |
+|  |                  |                                                |
+|  |  +-------------+ |                                                |
+|  |  | Chat Widget | |  <-- iframe/JS embed                          |
+|  |  | (bottom-    | |  <-- talks to FastAPI via HTTPS                |
+|  |  |  right)     | |  <-- captures page URL for context             |
+|  |  +-------------+ |                                                |
+|  +------------------+                                                |
+|         Student's Browser                                            |
++----------------------------------------------------------------------+
+```
+
+### Port Map
+
+| Service | Port | Access | Purpose |
+|---------|------|--------|---------|
+| Nginx | 443 (HTTPS) | Public | SSL termination, serve widget, proxy API |
+| UOB-AI (FastAPI) | 8005 | Internal only | Chatbot backend |
+| n8n | 5678 | Internal only | Workflow automation |
+| Aurora PostgreSQL | 5432 | Internal only (VPC) | Embeddings + ticket data |
+
+### Nginx Configuration (Updated for Widget)
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name your-server.com;
+
+    ssl_certificate /etc/ssl/certs/your-cert.pem;
+    ssl_certificate_key /etc/ssl/private/your-key.pem;
+
+    # Serve the chat widget embed script
+    location /widget/ {
+        alias /var/www/uob-ai/widget/;
+        add_header Access-Control-Allow-Origin "https://www.uob.edu.bh";
+        add_header Cache-Control "public, max-age=3600";
+    }
+
+    # Serve the React chat app (inside iframe)
+    location / {
+        root /var/www/uob-ai/frontend/dist;
+        try_files $uri /index.html;
+    }
+
+    # Proxy API calls to FastAPI
+    location /api/ {
+        proxy_pass http://127.0.0.1:8005;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+
+        # SSE streaming support
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 300s;
+    }
+
+    # Block direct n8n access from outside
+    # n8n is only accessible from FastAPI (internal)
 }
 ```
 
 ---
 
-### Workflow 2: Status Check (Student asks about ticket)
+## Part 5: File Structure
 
-**When:** Student asks "What's the status of my ticket?" or "UOB-123 شنو وضعه؟"
-
-```
-+-------------+     +------------+     +----------+     +-------------+
-|  Webhook    |     | Extract    |     | Fetch    |     | Reply to    |
-|  from       +---->+ Ticket ID  +---->+ from     +---->+ Chatbot     |
-|  Chatbot    |     | from msg   |     | Jira API |     | (status)    |
-+-------------+     +------------+     +----------+     +-------------+
-```
-
-**Response back to chatbot:**
-```json
-{
-  "ticket_id": "UOB-123",
-  "status": "In Progress",
-  "assignee": "Ahmed (Finance Dept)",
-  "last_update": "2026-05-14",
-  "comment": "We're verifying the payment with the bank"
-}
-```
-
----
-
-### Workflow 3: Jira Update -> Student Notification
-
-**When:** A support agent updates the Jira ticket
-
-```
-+-------------+     +------------+     +-------------+     +-------------+
-|  Jira       |     | Format     |     | Find        |     | Send        |
-|  Webhook    +---->+ Update     +---->+ Student     +---->+ Notification|
-|  (on change)|     | Message    |     | Session     |     | (email/SMS) |
-+-------------+     +------------+     +-------------+     +-------------+
-```
-
----
-
-## How the Chatbot Decides to Escalate
-
-We need to add a new routing step in the existing UOB-AI pipeline:
-
-```
-Current Pipeline:
-  User Query -> Sanitize -> FAQ Search -> RAG Search -> Respond
-
-New Pipeline:
-  User Query -> Sanitize -> FAQ Search -> RAG Search
-                                              |
-                                    +---------+---------+
-                                    |                   |
-                              Has answer?          No answer?
-                                    |                   |
-                                    v                   v
-                               Respond           Escalation Check
-                                                        |
-                                              +---------+---------+
-                                              |                   |
-                                        Student asks         Bot can't
-                                        for human help       answer
-                                              |                   |
-                                              v                   v
-                                         Create ticket      Offer to create
-                                         immediately        ticket (ask first)
-```
-
-### Trigger Keywords (examples):
-
-**English:**
-- "I want to talk to someone"
-- "human agent please"
-- "this isn't helping"
-- "I need help with [payment/registration/grades]"
-- "create a ticket"
-
-**Arabic:**
-- "ابي اكلم شخص"
-- "ابي موظف"
-- "ما استفدت"
-- "ساعدوني في [الدفع/التسجيل/الدرجات]"
-- "افتحوا لي تذكرة"
-
-### Categories for Auto-Routing:
-
-| Category | Priority | Jira Label | Assigned To |
-|----------|----------|------------|-------------|
-| Payment/Fees | High | `payment` | Finance Team |
-| Registration Issues | High | `registration` | Registrar |
-| Grade Disputes | Medium | `grades` | Academic Affairs |
-| IT/System Issues | Medium | `it-support` | IT Department |
-| General Inquiry | Low | `general` | Student Services |
-| Complaints | High | `complaint` | Quality Assurance |
-
----
-
-## Tech Stack for Jira-AI
-
-```
-+--------------------------------------------------+
-|                   Jira-AI Repo                    |
-|                                                   |
-|  +--------------------+  +---------------------+ |
-|  |  Chatbot Changes   |  |  n8n Configuration  | |
-|  |  (Python module)   |  |  (JSON workflows)   | |
-|  |                    |  |                     | |
-|  |  - escalation.py   |  |  - escalation.json  | |
-|  |  - jira_client.py  |  |  - status.json      | |
-|  |  - categories.py   |  |  - notify.json      | |
-|  +--------------------+  +---------------------+ |
-|                                                   |
-|  +--------------------+  +---------------------+ |
-|  |  n8n Setup         |  |  Jira Setup         | |
-|  |                    |  |                     | |
-|  |  - docker-compose  |  |  - project config   | |
-|  |  - env template    |  |  - issue types      | |
-|  +--------------------+  |  - workflows         | |
-|                          +---------------------+ |
-+--------------------------------------------------+
-```
-
-### Files We'll Create:
+### Jira-AI Repo (this repo)
 
 ```
 Jira-AI/
-|-- PLAN.md                      # This file (you're reading it)
-|-- README.md                    # Setup guide
+|
+|-- PLAN.md                          # This file
+|-- ARCHITECTURE.md                  # Mermaid diagrams
+|-- README.md                        # Setup & deployment guide
 |
 |-- n8n/
-|   |-- docker-compose.yml       # Run n8n locally or on server
-|   |-- .env.example             # n8n + Jira credentials template
+|   |-- docker-compose.yml           # Run n8n (+ Aurora access)
+|   |-- .env.example                 # n8n, Jira, Aurora credentials
 |   |-- workflows/
-|   |   |-- escalation.json      # Workflow 1: chatbot -> Jira
-|   |   |-- status-check.json    # Workflow 2: check ticket status
-|   |   |-- jira-notify.json     # Workflow 3: Jira -> notification
+|   |   |-- escalation.json          # Workflow 1: chatbot -> Jira
+|   |   |-- status-check.json        # Workflow 2: check ticket status
+|   |   |-- jira-notify.json         # Workflow 3: Jira -> notification
 |
 |-- chatbot-plugin/
-|   |-- escalation.py            # Detects when to escalate
-|   |-- jira_models.py           # Data models for tickets
-|   |-- categories.py            # Category & priority mapping
-|   |-- n8n_client.py            # Sends webhooks to n8n
-|   |-- ticket_store.py          # Maps session_id <-> ticket_id
+|   |-- escalation.py                # Detects when to escalate
+|   |-- categories.py                # Category & priority mapping
+|   |-- n8n_client.py                # Sends webhooks to n8n
+|   |-- models.py                    # Pydantic models for tickets
 |   |-- __init__.py
 |
+|-- db/
+|   |-- migration.sql                # Aurora schema (tables + indexes)
+|   |-- seed_tickets.sql             # Test data
+|
+|-- widget/
+|   |-- uob-chat.js                  # Embed script (loaded by WordPress)
+|   |-- widget.css                   # Floating button styles
+|   |-- README.md                    # WordPress embed instructions
+|
 |-- jira-setup/
-|   |-- project-config.md        # How to set up Jira project
-|   |-- issue-types.md           # Custom issue types & fields
+|   |-- project-config.md            # How to set up Jira project
+|   |-- issue-types.md               # Custom fields & workflows
 |
 |-- tests/
-|   |-- test_escalation.py       # Unit tests
+|   |-- test_escalation.py
 |   |-- test_categories.py
 |   |-- test_n8n_client.py
 ```
 
----
-
-## How Everything Connects
+### Changes to UOB-AI Repo
 
 ```
-+------------------------------------------------------------------+
-|                        YOUR SERVER                                |
-|                                                                   |
-|  +------------------+    webhook     +------------------+         |
-|  |                  +--------------->+                  |         |
-|  |  UOB-AI Chatbot  |               |  n8n             |         |
-|  |  (FastAPI :8005) |<---------------+  (Docker :5678)  |         |
-|  |                  |   ticket info  |                  |         |
-|  +--------+---------+               +--------+---------+         |
-|           |                                  |                   |
-|           | serves                           | API calls         |
-|           |                                  |                   |
-+-----------|----------------------------------|-------------------+
-            |                                  |
-            v                                  v
-     +------+------+                   +-------+--------+
-     |             |                   |                |
-     |  Student    |                   |  Jira Cloud    |
-     |  Browser    |                   |  (Atlassian)   |
-     |             |                   |                |
-     +-------------+                   +----------------+
+UOB-AI/
+|-- db.py            -> db_aurora.py       # Replace Supabase with Aurora (asyncpg)
+|-- api.py                                 # Add: escalation route, Jira callback endpoint
+|-- core.py                                # Add: should_escalate(), escalation keywords
+|-- .env                                   # Replace: SUPABASE_* with AURORA_*
+|-- requirements.txt                       # Add: asyncpg. Remove: supabase
+|-- frontend/
+|   |-- src/App.jsx                        # Add: ticket UI, "Talk to Human" button
+|   |-- src/widget-mode.css                # New: compact styles for iframe mode
+|-- widget/
+|   |-- uob-chat.js                        # New: embed script for WordPress
+|   |-- widget.css                         # New: floating button styles
 ```
-
-### Port Map:
-
-| Service | Port | Purpose |
-|---------|------|---------|
-| Nginx | 80 | Public-facing, routes traffic |
-| UOB-AI (FastAPI) | 8005 | Chatbot backend |
-| n8n | 5678 | Workflow automation (internal) |
-| PostgreSQL (Supabase) | 5432 | Chatbot data |
 
 ---
 
-## Step-by-Step Implementation Plan
+## Part 6: Implementation Phases
 
-### Phase 1: Setup Infrastructure (Day 1)
+### Phase 0: Aurora Migration (Day 1-2)
 
+**Goal:** Move from Supabase to Aurora PostgreSQL
+
+- [ ] Create Aurora cluster in me-south-1 (Bahrain)
+- [ ] Enable pgvector extension
+- [ ] Run migration.sql (create tables + HNSW indexes)
+- [ ] Write `db_aurora.py` (asyncpg client)
+- [ ] Migrate embeddings from JSON files to Aurora
+- [ ] Update `core.py` to use new db module
+- [ ] Test: FAQ, calendar, regulation searches all work on Aurora
+- [ ] Remove Supabase dependencies
+
+### Phase 1: Widget Embedding (Day 3-4)
+
+**Goal:** Chatbot appears as a widget on uob.edu.bh
+
+- [ ] Build `uob-chat.js` (embed script)
+- [ ] Build `widget.css` (floating button + iframe container)
+- [ ] Add `widget-mode.css` to React app (compact layout for iframe)
+- [ ] Configure CORS for `uob.edu.bh`
+- [ ] Configure Nginx to serve widget files with correct CORS headers
+- [ ] Test on uob.edu.bh (or a staging copy)
+- [ ] Test mobile responsiveness
+- [ ] Test RTL (Arabic) layout in widget mode
+
+### Phase 2: Jira Escalation via n8n (Day 5-7)
+
+**Goal:** Bot can create Jira tickets when it can't help
+
+- [ ] Deploy n8n via Docker on the server
 - [ ] Set up Jira Cloud project (UOBSUP)
-- [ ] Create issue types (Service Request, Bug, Complaint)
-- [ ] Configure Jira workflows (Open -> In Progress -> Resolved -> Closed)
-- [ ] Deploy n8n via Docker on the same server as UOB-AI
-- [ ] Connect n8n to Jira (API token)
+- [ ] Create `escalation.py` (detection logic)
+- [ ] Create `categories.py` (routing rules)
+- [ ] Create `n8n_client.py` (webhook sender)
+- [ ] Build n8n Workflow 1 (escalation)
+- [ ] Add escalation route to `api.py`
+- [ ] Add ticket UI to `App.jsx`
+- [ ] Create `ticket_sessions` table in Aurora
+- [ ] Test end-to-end: chat -> escalation -> Jira ticket
 
-### Phase 2: Build Escalation Flow (Day 2-3)
+### Phase 3: Status Check + Notifications (Day 8-9)
 
-- [ ] Create `escalation.py` — detect when chatbot should escalate
-- [ ] Create `categories.py` — classify issue category & priority
-- [ ] Create `n8n_client.py` — send webhook to n8n
-- [ ] Build n8n Workflow 1 (escalation) — webhook -> Jira ticket
-- [ ] Modify `api.py` in UOB-AI to call escalation logic
-- [ ] Add new SSE event type: `{"type": "ticket", "id": "UOB-123"}`
+**Goal:** Students can check ticket status, get notified on updates
 
-### Phase 3: Build Status Check Flow (Day 4)
-
-- [ ] Create `ticket_store.py` — track session <-> ticket mapping
+- [ ] Build n8n Workflow 2 (status check)
 - [ ] Add ticket status intent detection in chatbot
-- [ ] Build n8n Workflow 2 (status check) — webhook -> Jira query -> response
-- [ ] Display ticket status in chat UI
+- [ ] Build n8n Workflow 3 (Jira -> email notification)
+- [ ] Configure Jira webhooks (on issue update)
+- [ ] Test full cycle
 
-### Phase 4: Build Notification Flow (Day 5)
+### Phase 4: Testing & Polish (Day 10)
 
-- [ ] Configure Jira webhook (on issue update)
-- [ ] Build n8n Workflow 3 (notification) — Jira update -> email/notification
-- [ ] (Optional) Add real-time notification to chat UI via WebSocket
-
-### Phase 5: Testing & Polish (Day 6-7)
-
-- [ ] Write unit tests for all new modules
-- [ ] End-to-end testing (chatbot -> n8n -> Jira -> back)
+- [ ] End-to-end testing (all 3 workflows)
 - [ ] Test Arabic & English flows
-- [ ] Test error cases (n8n down, Jira down, invalid input)
-- [ ] Update UOB-AI frontend with ticket UI elements
+- [ ] Test error cases (n8n down, Jira down, Aurora down)
+- [ ] Load testing (widget performance on WordPress)
+- [ ] Security audit (CORS, rate limiting, webhook auth)
 
 ---
 
-## Example Conversations
+## Part 7: Example Conversations
 
-### Scenario 1: Student needs help with payment (Arabic)
+### Scenario 1: Normal Q&A (no Jira needed)
+
+```
+Student: When does spring semester start?
+Bot:     Spring semester 2025/2026 begins on January 25, 2026.
+         [Source: FAQ match 95%]
+```
+
+**No escalation.** Bot answers from FAQ. This is the primary use case.
+
+### Scenario 2: Student needs help with payment (Arabic)
 
 ```
 Student: دفعت الرسوم بس لين الحين يقول ما دفعت
-Bot:     هالموضوع يحتاج متابعة من فريق الدعم.
-         تبيني افتح لك تذكرة عشان يتواصلون معك؟
+Bot:     للأسف ما أقدر أساعدك في مشاكل الدفع مباشرة.
+         تبيني افتح لك تذكرة دعم عشان فريق المالية يتواصل معك؟
 
-Student: ايه افتح لي
+Student: ايه
 Bot:     تم فتح تذكرة رقم UOB-456
-         فريق المالية بيتواصل معك قريب.
-         تقدر تسأل عن وضع التذكرة في أي وقت.
+         فريق المالية بيتواصل معك خلال 24 ساعة.
+         تقدر تسألني عن وضع التذكرة في أي وقت.
 ```
 
-### Scenario 2: Student checks ticket status (English)
-
-```
-Student: What's the status of my ticket UOB-456?
-Bot:     Ticket UOB-456:
-         Status: In Progress
-         Assigned to: Finance Department
-         Last update: "Verifying payment with the bank"
-         Updated: 2 hours ago
-```
-
-### Scenario 3: Student explicitly asks for human (Arabic)
+### Scenario 3: Student asks for human help explicitly
 
 ```
 Student: ابي اكلم موظف
-Bot:     اكيد! شنو الموضوع اللي تحتاج مساعدة فيه؟
+Bot:     أكيد! شنو الموضوع؟
          1. دفع / رسوم
          2. تسجيل مواد
          3. درجات
          4. مشاكل تقنية
          5. شي ثاني
 
-Student: 1
-Bot:     تم فتح تذكرة UOB-457 لفريق المالية.
-         بيتواصلون معك خلال 24 ساعة.
+Student: 2
+Bot:     تم فتح تذكرة UOB-458 لقسم التسجيل.
+         بيتواصلون معك قريب.
 ```
+
+### Scenario 4: Student checks ticket status
+
+```
+Student: شنو وضع التذكرة UOB-456؟
+Bot:     تذكرة UOB-456:
+         الحالة: قيد المعالجة
+         الفريق: المالية
+         آخر تحديث: "جاري التحقق من الدفع مع البنك" (قبل ساعتين)
+```
+
+### Scenario 5: Bot tries harder before escalating
+
+```
+Student: How do I change my major?
+Bot:     [FAQ match: 85% - "changing major process"]
+         To change your major, you need to:
+         1. Complete at least one semester
+         2. Have a GPA of 2.0 or higher
+         3. Submit a change request through the registration office
+         [Source: Regulation Article 15]
+```
+
+**No escalation.** Bot found the answer. This is important — don't escalate what you can answer.
 
 ---
 
-## Integration Points with UOB-AI
+## Part 8: Security & Compliance
 
-### Changes needed in UOB-AI repo:
-
-**1. `core.py` — Add escalation detection:**
-```python
-ESCALATION_KEYWORDS_EN = [
-    "talk to someone", "human agent", "create ticket",
-    "not helping", "real person", "support agent"
-]
-
-ESCALATION_KEYWORDS_AR = [
-    "ابي اكلم شخص", "ابي موظف", "افتح تذكرة",
-    "ما استفدت", "شخص حقيقي", "ابي دعم"
-]
-
-SUPPORT_CATEGORIES = [
-    "payment", "registration", "grades",
-    "it_support", "complaint", "general"
-]
-```
-
-**2. `api.py` — Add webhook endpoint + escalation route:**
-```python
-# New endpoint for n8n to call back with ticket info
-@app.post("/api/jira/callback")
-async def jira_callback(data: dict):
-    # n8n sends ticket ID back, we store it for the session
-    pass
-
-# In the chat stream handler, add escalation check:
-# if should_escalate(message, faq_score, rag_score):
-#     send_to_n8n(session_id, message, history, category)
-```
-
-**3. Frontend `App.jsx` — Add ticket UI:**
-```
-- Show ticket creation confirmation
-- Show ticket status card
-- Add "Talk to Human" button in sidebar
-```
+| Area | Implementation |
+|------|---------------|
+| **Data residency** | Aurora in me-south-1 (Bahrain) — data stays in country |
+| **Widget isolation** | iframe sandbox — widget can't access uob.edu.bh DOM |
+| **CORS** | Only allow `uob.edu.bh` origin |
+| **Webhook auth** | Shared secret token between FastAPI and n8n |
+| **n8n access** | Internal only (port 5678 blocked from outside) |
+| **Aurora access** | VPC + security group — only app server can connect |
+| **Jira API token** | Stored in `.env`, rotated quarterly |
+| **Rate limiting** | 30 msg/10 min per IP + max 3 tickets per session per hour |
+| **PII in tickets** | Minimal — no student ID or grades in Jira tickets |
+| **SSL** | HTTPS everywhere (Nginx SSL termination) |
+| **Logging** | Metadata only — raw messages never logged |
 
 ---
 
-## Security Considerations
+## Part 9: Cost Estimate
 
-| Risk | Mitigation |
-|------|-----------|
-| Student data in Jira | Use Jira Cloud (SOC 2 compliant), minimal PII in tickets |
-| n8n exposed to internet | Keep n8n on internal port (5678), only accessible from server |
-| Webhook abuse | Authenticate webhooks with shared secret token |
-| Jira API token leak | Store in `.env`, never commit, rotate regularly |
-| Spam tickets | Rate limit ticket creation (max 3 per session per hour) |
+| Service | Cost | Notes |
+|---------|------|-------|
+| **Aurora PostgreSQL** | ~$60-100/mo | db.r6g.large in me-south-1 |
+| **n8n** | Free | Self-hosted (Docker) |
+| **Jira Cloud** | Free tier or $7.75/user/mo | Free for up to 10 users |
+| **OpenAI API** | ~$20-50/mo | Depends on traffic |
+| **EC2 (app server)** | ~$30-80/mo | t3.medium or larger |
+| **SSL Certificate** | Free | Let's Encrypt |
+| **Total** | ~$110-230/mo | |
 
 ---
 
-## Why This Design Works for UOB
+## Summary: What Goes Where
 
-1. **Bilingual** — The chatbot already handles Arabic/English; tickets preserve the language
-2. **Non-intrusive** — Students don't need to leave the chat; everything happens in the same window
-3. **Scalable** — n8n can route to different departments automatically
-4. **Trackable** — Every student issue gets a Jira ticket number they can reference
-5. **Flexible** — Adding Slack/Email/Teams notifications is just one n8n node away
-6. **Self-hosted** — University data stays on university servers
+| Component | Responsibility | Location |
+|-----------|---------------|----------|
+| **uob.edu.bh** | Just hosts the widget `<script>` tag | WordPress (unchanged) |
+| **Widget JS** | Floating button + iframe | Served from your Nginx |
+| **React Frontend** | Chat UI (inside iframe) | Served from your Nginx |
+| **FastAPI Backend** | Q&A pipeline + escalation logic | Your server :8005 |
+| **Aurora PostgreSQL** | Embeddings + ticket sessions | AWS me-south-1 |
+| **n8n** | Workflow automation (Jira bridge) | Docker on your server :5678 |
+| **Jira Cloud** | Ticket management | Atlassian cloud |
