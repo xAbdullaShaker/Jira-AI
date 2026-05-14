@@ -74,17 +74,6 @@ Chatbot ----webhook----> n8n ----API----> Jira
 
 **n8n** is the middleware — the chatbot sends it a webhook, n8n creates the Jira ticket, and returns the ticket ID back to the student.
 
-### What Gets a Ticket (Tech Issues Only)
-
-| Issue | Ticket? | Example |
-|-------|---------|---------|
-| System down / error 500 | Yes (Critical) | "البوابة ما تفتح" |
-| Can't login / locked out | Yes (High) | "can't login to the portal" |
-| Portal bugs / crashes | Yes (High) | "الصفحة تطلع خطأ" |
-| Email not working | Yes (Medium) | "الايميل ما يشتغل" |
-| Hardware (printer, lab) | Yes (Low) | "الطابعة ما تطبع" |
-| General tech help | Yes (Low) | "مساعدة تقنية" |
-
 ### What Does NOT Get a Ticket
 
 | Issue | What happens instead |
