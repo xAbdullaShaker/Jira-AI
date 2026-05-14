@@ -5,7 +5,9 @@
 A **bilingual AI chatbot widget** that lives on the University of Bahrain website (`uob.edu.bh`) and serves two purposes:
 
 1. **Primary: Answer student questions** — academic calendar, regulations, deadlines, GPA rules (this already works in UOB-AI)
-2. **Secondary: Jira escalation** — when the bot can't help, it creates a Jira ticket via n8n and connects the student to human support
+2. **Secondary: Tech support ticketing** — when a student has a technical issue (system down, login problems, portal bugs, app errors), the bot creates a Jira ticket via n8n and routes it to the IT/tech support team
+
+**Jira is a tech support ticketing system here** — not general student services. It handles IT issues, system bugs, access problems, and technical requests. Academic issues like payments, grades, or registration go through other university channels.
 
 The chatbot widget will be **embedded directly on uob.edu.bh** (a WordPress site using the Avada theme), so students don't need to visit a separate page.
 
@@ -343,13 +345,15 @@ async def retrieve_calendar_chunks(embedding, top_k=4, min_score=0.35):
 
 ### Reminder: This is Optional
 
-The chatbot's **main job** is answering questions. Jira escalation is a **nice-to-have** for when:
-- The bot genuinely can't answer (out of domain)
-- The student explicitly asks for human help
-- The issue requires action (payment problems, registration errors)
+The chatbot's **main job** is answering questions. Jira is the **tech support ticketing system** for when:
+- The student has a **technical issue** (system down, can't login, portal error, app crash)
+- The student reports a **bug** on any university system
+- The student needs **IT help** (password reset, access request, network issues)
+- The student explicitly asks for tech support
 
-**The bot should NOT escalate for:**
-- Questions it can answer from FAQ/RAG
+**The bot should NOT create a Jira ticket for:**
+- Questions it can answer from FAQ/RAG (academic questions)
+- Non-technical issues (payment, grades, registration — these go through other channels)
 - Vague messages ("hi", "hello")
 - Repeated questions (try harder before escalating)
 
@@ -357,28 +361,27 @@ The chatbot's **main job** is answering questions. Jira escalation is a **nice-t
 
 #### Workflow 1: Escalation (Chatbot -> Jira)
 
-**When:** Bot can't answer AND student confirms they want a ticket
+**When:** Student has a technical issue that needs IT support
 
 ```
-Student: "I paid my fees but it still shows unpaid"
+Student: "I can't login to the student portal, it keeps showing error 500"
 Bot:     [searches FAQ - no match]
-         [searches RAG - no relevant context]
-         [detects: out-of-domain, actionable issue]
-         "I can't help with payment system issues directly.
-          Would you like me to create a support ticket? (yes/no)"
-Student: "yes"
-Bot:     [asks category if unclear]
-         [sends webhook to n8n]
-         "Done! Ticket UOB-456 created. Finance team will contact you within 24h."
+         [detects: technical issue, system error]
+         "Looks like a technical issue! I'll create a support ticket for the IT team.
+          Can you describe what you were trying to do?"
+Student: "I was trying to check my grades on the portal"
+Bot:     [sends webhook to n8n with full context]
+         "Done! Ticket UOB-456 created. IT support will investigate and contact you."
 ```
 
 **n8n flow:**
 ```
 Webhook -> Classify Priority -> Create Jira Issue -> Return Ticket ID
            |                                          |
-           |  payment = HIGH                          |  also:
-           |  grades = MEDIUM                         |  - notify Slack
-           |  general = LOW                           |  - send email
+           |  system down = CRITICAL                  |  also:
+           |  login/access = HIGH                     |  - notify Slack
+           |  bug report = MEDIUM                     |  - notify IT team
+           |  general tech = LOW                      |  - send email
 ```
 
 #### Workflow 2: Status Check (Student -> Jira via bot)
@@ -405,58 +408,89 @@ Support agent updates ticket in Jira
 ### Escalation Detection Logic
 
 ```python
-# How the chatbot decides to escalate
+# How the chatbot decides to create a tech support ticket
 
-def should_escalate(message, faq_score, rag_chunks, language):
+def should_create_ticket(message, faq_score, rag_chunks, language):
     """
-    Returns: (should_escalate: bool, reason: str)
+    Returns: (should_create: bool, reason: str, category: str)
     
-    Escalation triggers:
-    1. Explicit request for human help
-    2. Bot can't answer (low FAQ + low RAG scores)
-    3. Issue requires action (not just information)
+    ONLY creates tickets for TECHNICAL issues.
+    Academic/admin questions are answered by the bot or redirected.
     """
     
-    # 1. Explicit escalation keywords
-    if has_escalation_keywords(message, language):
-        return True, "student_requested"
+    # 1. Student explicitly asks for tech support
+    if has_tech_support_keywords(message, language):
+        category = classify_tech_category(message, language)
+        return True, "student_requested_tech_support", category
     
-    # 2. Bot genuinely can't answer
+    # 2. Student reports a technical problem
+    if is_technical_issue(message, language):
+        category = classify_tech_category(message, language)
+        return True, "technical_issue_detected", category
+    
+    # 3. Non-technical issue the bot can't answer -> redirect, don't ticket
     if faq_score < 0.40 and not rag_chunks:
-        return True, "no_answer_found"
+        if is_academic_or_admin(message, language):
+            return False, "redirect_to_department", None  # redirect, no ticket
+        # Unknown issue -> offer tech support as option
+        return False, "offer_ticket_option", None
     
-    # 3. Actionable issues (payment, registration errors)
-    if is_actionable_issue(message, language):
-        return True, "actionable_issue"
-    
-    return False, None
+    return False, None, None
+
+
+TECH_KEYWORDS_EN = [
+    "error", "bug", "crash", "can't login", "not working", "down",
+    "slow", "loading", "500", "404", "password reset", "locked out",
+    "wifi", "network", "printer", "system", "portal error", "app crash"
+]
+
+TECH_KEYWORDS_AR = [
+    "خطأ", "ما يشتغل", "واقف", "ما أقدر أدخل", "بطيء", "الموقع طاح",
+    "واي فاي", "شبكة", "طابعة", "النظام", "كلمة السر", "الصفحة ما تفتح",
+    "مشكلة تقنية", "دعم فني", "ما يفتح", "error"
+]
 ```
 
-### Categories & Routing
+### Tech Support Categories & Routing
 
-| Category | Detection Keywords | Priority | Jira Label | Team |
-|----------|-------------------|----------|------------|------|
-| Payment/Fees | دفع, رسوم, payment, fees, paid | High | `payment` | Finance |
-| Registration | تسجيل, مواد, register, courses, enroll | High | `registration` | Registrar |
-| Grades | درجات, نتائج, grades, results, GPA | Medium | `grades` | Academic Affairs |
-| IT/System | نظام, موقع, system, login, password | Medium | `it-support` | IT |
-| Complaints | شكوى, complaint, unfair | High | `complaint` | Quality Assurance |
-| General | everything else | Low | `general` | Student Services |
+All Jira tickets are **tech support issues**. Categories route within the IT department:
+
+| Category | Detection Keywords | Priority | Jira Label | Assigned To |
+|----------|-------------------|----------|------------|-------------|
+| System Outage | نظام واقف, server down, 500 error, site down, الموقع ما يشتغل | Critical | `outage` | Infrastructure Team |
+| Login/Access | ما أقدر أدخل, can't login, password, locked out, access denied | High | `access` | Identity & Access Team |
+| Portal Bugs | خطأ, error, bug, glitch, الصفحة ما تفتح, not loading, crash | High | `bug` | Application Dev Team |
+| Network/WiFi | واي فاي, wifi, internet, الشبكة, network, VPN | Medium | `network` | Network Team |
+| Email/Apps | إيميل, email, outlook, teams, الايميل ما يشتغل | Medium | `email-apps` | Collaboration Tools Team |
+| Hardware | طابعة, printer, projector, بروجكتر, lab computer | Low | `hardware` | Desktop Support |
+| General Tech | مساعدة تقنية, tech help, IT help, everything else | Low | `general-tech` | Help Desk (L1) |
+
+### What is NOT a Jira ticket (redirect instead):
+
+| Student says | Bot responds |
+|-------------|-------------|
+| "I want to pay fees" | "For payment issues, visit the Finance Office or uob.edu.bh/finance" |
+| "What's my GPA?" | "I can explain GPA rules! For your specific GPA, check the student portal." |
+| "I want to register for courses" | "Here's how registration works: [FAQ/RAG answer]" |
+| "I have a complaint about a professor" | "For academic complaints, contact the Dean's Office." |
 
 ### Webhook Payload (Chatbot -> n8n)
 
 ```json
 {
   "session_id": "uuid-abc-123",
-  "message": "I paid my fees but it still shows unpaid",
+  "message": "I can't login to the student portal, error 500",
   "language": "en",
   "conversation_history": [
-    {"role": "user", "content": "I paid my fees but it still shows unpaid"},
-    {"role": "assistant", "content": "I specialize in academic questions..."}
+    {"role": "user", "content": "I can't login to the student portal, error 500"},
+    {"role": "assistant", "content": "That sounds like a technical issue. Let me create a ticket..."}
   ],
-  "category": "payment",
-  "escalation_reason": "actionable_issue",
-  "page_url": "https://www.uob.edu.bh/admission/fees",
+  "category": "bug",
+  "priority": "high",
+  "affected_system": "student_portal",
+  "error_details": "HTTP 500 on login page",
+  "escalation_reason": "technical_issue",
+  "page_url": "https://www.uob.edu.bh/student-portal",
   "timestamp": "2026-05-14T10:30:00Z"
 }
 ```
@@ -706,33 +740,34 @@ Bot:     Spring semester 2025/2026 begins on January 25, 2026.
 
 **No escalation.** Bot answers from FAQ. This is the primary use case.
 
-### Scenario 2: Student needs help with payment (Arabic)
+### Scenario 2: Student has a technical issue (Arabic) -> Jira ticket
 
 ```
-Student: دفعت الرسوم بس لين الحين يقول ما دفعت
-Bot:     للأسف ما أقدر أساعدك في مشاكل الدفع مباشرة.
-         تبيني افتح لك تذكرة دعم عشان فريق المالية يتواصل معك؟
+Student: البوابة ما تفتح معي، يطلع خطأ 500
+Bot:     يبدو إن فيه مشكلة تقنية في البوابة.
+         بسوي لك تذكرة دعم تقني عشان فريق الـ IT يتابعون الموضوع.
+         شنو كنت تحاول تسوي بالضبط؟
 
-Student: ايه
+Student: كنت أبي أشوف درجاتي
 Bot:     تم فتح تذكرة رقم UOB-456
-         فريق المالية بيتواصل معك خلال 24 ساعة.
+         النوع: خطأ في بوابة الطالب
+         الأولوية: عالية
+         فريق الدعم التقني بيتابعون الموضوع.
          تقدر تسألني عن وضع التذكرة في أي وقت.
 ```
 
-### Scenario 3: Student asks for human help explicitly
+### Scenario 3: Student reports WiFi issue
 
 ```
-Student: ابي اكلم موظف
-Bot:     أكيد! شنو الموضوع؟
-         1. دفع / رسوم
-         2. تسجيل مواد
-         3. درجات
-         4. مشاكل تقنية
-         5. شي ثاني
+Student: الواي فاي في مبنى العلوم ما يشتغل
+Bot:     بسجل المشكلة لفريق الشبكات.
+         وين بالضبط في المبنى؟ (اختياري)
 
-Student: 2
-Bot:     تم فتح تذكرة UOB-458 لقسم التسجيل.
-         بيتواصلون معك قريب.
+Student: الطابق الثاني، معمل الكمبيوتر
+Bot:     تم فتح تذكرة UOB-457
+         النوع: مشكلة شبكة
+         الموقع: مبنى العلوم - الطابق 2 - معمل الكمبيوتر
+         فريق الشبكات بيتابعون.
 ```
 
 ### Scenario 4: Student checks ticket status
@@ -741,11 +776,26 @@ Bot:     تم فتح تذكرة UOB-458 لقسم التسجيل.
 Student: شنو وضع التذكرة UOB-456؟
 Bot:     تذكرة UOB-456:
          الحالة: قيد المعالجة
-         الفريق: المالية
-         آخر تحديث: "جاري التحقق من الدفع مع البنك" (قبل ساعتين)
+         الفريق: فريق التطبيقات
+         آخر تحديث: "تم اكتشاف المشكلة وجاري الإصلاح" (قبل ساعتين)
 ```
 
-### Scenario 5: Bot tries harder before escalating
+### Scenario 5: Non-technical issue -> Bot redirects (NO Jira ticket)
+
+```
+Student: I paid my fees but it still shows unpaid
+Bot:     I specialize in academic info and tech support.
+         For payment issues, please contact the Finance Office:
+         - Visit: Administration Building, Ground Floor
+         - Call: +973 1743 8888
+         - Email: finance@uob.edu.bh
+         
+         Is there anything else I can help with?
+```
+
+**No Jira ticket.** Payment is not a tech issue — bot redirects to the right department.
+
+### Scenario 6: Bot answers academic question (NO Jira ticket)
 
 ```
 Student: How do I change my major?
@@ -757,7 +807,7 @@ Bot:     [FAQ match: 85% - "changing major process"]
          [Source: Regulation Article 15]
 ```
 
-**No escalation.** Bot found the answer. This is important — don't escalate what you can answer.
+**No Jira ticket.** Bot answered the question. This is the primary use case.
 
 ---
 
@@ -774,6 +824,7 @@ Bot:     [FAQ match: 85% - "changing major process"]
 | **Jira API token** | Stored in `.env`, rotated quarterly |
 | **Rate limiting** | 30 msg/10 min per IP + max 3 tickets per session per hour |
 | **PII in tickets** | Minimal — no student ID or grades in Jira tickets |
+| **Ticket scope** | Only tech support issues — academic/admin issues redirected |
 | **SSL** | HTTPS everywhere (Nginx SSL termination) |
 | **Logging** | Metadata only — raw messages never logged |
 

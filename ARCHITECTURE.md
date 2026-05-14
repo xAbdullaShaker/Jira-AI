@@ -138,34 +138,36 @@ flowchart TD
     style M fill:#4CAF50,color:#fff
 ```
 
-## 5. Secondary Flow: Jira Escalation
+## 5. Secondary Flow: Tech Support Ticketing (Jira)
 
 ```mermaid
 flowchart TD
-    A[Bot can't answer\nOR student asks for human] --> B{Student confirms\nthey want a ticket?}
+    A[Student reports\ntechnical issue] --> B{Is it a tech issue?}
     
-    B -->|No| C[Continue chatting]
-    B -->|Yes| D[Detect Category]
+    B -->|No - academic/admin| C[Redirect to\ncorrect department]
+    B -->|Yes - technical| D[Detect Tech Category]
     
     D --> E{Category}
-    E -->|Payment/Fees| F[Priority: HIGH\nTeam: Finance]
-    E -->|Registration| G[Priority: HIGH\nTeam: Registrar]
-    E -->|Grades| H[Priority: MEDIUM\nTeam: Academic]
-    E -->|IT/System| I[Priority: MEDIUM\nTeam: IT]
-    E -->|Complaint| J[Priority: HIGH\nTeam: QA]
-    E -->|General| K[Priority: LOW\nTeam: Student Services]
+    E -->|System Outage| F[Priority: CRITICAL\nTeam: Infrastructure]
+    E -->|Login/Access| G[Priority: HIGH\nTeam: Identity & Access]
+    E -->|Portal Bug| H[Priority: HIGH\nTeam: App Dev]
+    E -->|Network/WiFi| I[Priority: MEDIUM\nTeam: Network]
+    E -->|Email/Apps| J[Priority: MEDIUM\nTeam: Collaboration Tools]
+    E -->|Hardware| K[Priority: LOW\nTeam: Desktop Support]
+    E -->|General Tech| L[Priority: LOW\nTeam: Help Desk L1]
     
-    F & G & H & I & J & K --> L[Send webhook to n8n]
+    F & G & H & I & J & K & L --> M[Send webhook to n8n]
     
-    L --> M[n8n creates Jira issue]
-    M --> N[Save to ticket_sessions\nin Aurora]
-    N --> O[Return ticket ID to student\nUOB-456]
+    M --> N[n8n creates Jira issue\nin UOBTECH project]
+    N --> O[Save to ticket_sessions\nin Aurora]
+    O --> P[Return ticket ID to student\nUOB-456]
 
     style A fill:#f44336,color:#fff
-    style L fill:#FF6D00,color:#fff
-    style M fill:#0052CC,color:#fff
-    style N fill:#FF9800,color:#fff
-    style O fill:#4CAF50,color:#fff
+    style C fill:#9E9E9E,color:#fff
+    style M fill:#FF6D00,color:#fff
+    style N fill:#0052CC,color:#fff
+    style O fill:#FF9800,color:#fff
+    style P fill:#4CAF50,color:#fff
 ```
 
 ## 6. n8n Workflow 1: Escalation
@@ -287,7 +289,50 @@ sequenceDiagram
     F-->>S: SSE: "قيد المعالجة - جاري التحقق"
 ```
 
-## 10. Aurora PostgreSQL Schema
+## 10. Jira Tech Support Project Structure
+
+```mermaid
+graph TD
+    subgraph JiraProject["Jira Project: UOBTECH - Tech Support Ticketing"]
+        Board[Kanban Board]
+        
+        Board --> New[New]
+        Board --> Triaged[Triaged]
+        Board --> InProgress[In Progress]
+        Board --> Waiting[Waiting for Info]
+        Board --> Resolved[Resolved]
+        Board --> Closed[Closed]
+        
+        subgraph IssueTypes["Issue Types"]
+            Incident["Incident\n(System down/outage)"]
+            Bug["Bug Report\n(Portal/app errors)"]
+            SR["Service Request\n(Access/password/setup)"]
+            HW["Hardware Request\n(Printer/lab equipment)"]
+        end
+        
+        subgraph ITTeams["IT Support Teams"]
+            Infra["Infrastructure\nServers & Outages"]
+            IAM["Identity & Access\nLogin & Passwords"]
+            AppDev["Application Dev\nPortal & App Bugs"]
+            Network["Network Team\nWiFi & Connectivity"]
+            Collab["Collaboration Tools\nEmail & Apps"]
+            Desktop["Desktop Support\nHardware & Labs"]
+            L1["Help Desk L1\nGeneral Tech"]
+        end
+    end
+
+    style Board fill:#0052CC,color:#fff
+    style New fill:#4CAF50,color:#fff
+    style Triaged fill:#00BCD4,color:#fff
+    style InProgress fill:#FF9800,color:#fff
+    style Waiting fill:#9C27B0,color:#fff
+    style Resolved fill:#2196F3,color:#fff
+    style Closed fill:#607D8B,color:#fff
+    style Incident fill:#f44336,color:#fff
+    style Bug fill:#FF5722,color:#fff
+```
+
+## 11. Aurora PostgreSQL Schema
 
 ```mermaid
 erDiagram
@@ -320,7 +365,9 @@ erDiagram
         int id PK
         text session_id
         text ticket_id
-        text category
+        text category "outage/access/bug/network/email/hardware/general"
+        text priority "critical/high/medium/low"
+        text affected_system "portal/wifi/email/etc"
         text language
         text student_email
         timestamp created_at
@@ -332,7 +379,7 @@ erDiagram
     REGULATION_CHUNKS ||--o{ TICKET_SESSIONS : "same Aurora DB"
 ```
 
-## 11. Deployment Architecture (AWS)
+## 12. Deployment Architecture (AWS)
 
 ```mermaid
 graph TB
@@ -381,7 +428,7 @@ graph TB
     style Nginx2 fill:#009688,color:#fff
 ```
 
-## 12. Request Flow Summary
+## 13. Request Flow Summary
 
 ```mermaid
 graph LR
@@ -392,8 +439,8 @@ graph LR
         B1 -->|answer| A1
     end
     
-    subgraph "10% of requests (Escalation)"
-        A2[Student] -->|can't answer| B2[FastAPI]
+    subgraph "10% of requests (Tech Support Tickets)"
+        A2[Student] -->|tech issue| B2[FastAPI]
         B2 -->|webhook| C2[n8n]
         C2 -->|create ticket| D2[Jira]
         D2 -->|ticket ID| C2
